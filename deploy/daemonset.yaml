@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tailscale-exporter
+  namespace: tailscale
+  labels:
+    app: tailscale-exporter
+spec:
+  selector:
+    matchLabels:
+      app: tailscale-exporter
+  template:
+    metadata:
+      labels:
+        app: tailscale-exporter
+    spec:
+      tolerations:
+      - operator: Exists
+      containers:
+      - name: exporter
+        image: ghcr.io/hannlabs/tailscale-exporter:latest
+        args: ["--socket=/var/run/tailscale/tailscaled.sock"]
+        ports:
+        - containerPort: 8080
+          name: metrics
+        volumeMounts:
+        - name: tailscale-sock
+          mountPath: /var/run/tailscale
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+      volumes:
+      - name: tailscale-sock
+        hostPath:
+          path: /var/run/tailscale
+          type: Directory

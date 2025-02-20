@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tailscale-exporter
+  namespace: tailscale
+  labels:
+    release: prometheus-operator
+spec:
+  jobLabel: tailscale-exporter
+  endpoints:
+  - port: metrics
+    interval: 30s
+  selector:
+    matchLabels:
+      app: tailscale-exporter

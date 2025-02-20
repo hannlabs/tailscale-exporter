@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: tailscale-exporter
+  namespace: tailscale
+  labels:
+    app: tailscale-exporter
+spec:
+  selector:
+    app: tailscale-exporter
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080

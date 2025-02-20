@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	proping "github.com/prometheus-community/pro-bing"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"tailscale.com/client/tailscale"
@@ -34,10 +35,11 @@ func (s *arrayFlags) Set(value string) error {
 }
 
 type arguments struct {
-	socketPath  *string
-	pingActive  *bool
-	pingTags    *arrayFlags
-	pingTimeout *time.Duration
+	socketPath        *string
+	pingActive        *bool
+	pingTags          *arrayFlags
+	pingTimeout       *time.Duration
+	pingWithTailscale *bool
 }
 
 func NewArguments() arguments {
@@ -47,25 +49,31 @@ func NewArguments() arguments {
 	args.pingTags = new(arrayFlags)
 	flag.Var(args.pingTags, "pingTags", "ping peers with the tag")
 	args.pingTimeout = flag.Duration("pingTimeout", time.Second, "ping timeout")
+	args.pingWithTailscale = flag.Bool("pingWithTailscale", false, "ping with tailscale ping")
 	return args
 }
 
 type metrics struct {
-	txBytes       *prometheus.CounterVec
-	rxBytes       *prometheus.CounterVec
-	pingLatency   *prometheus.GaugeVec
-	directConnect *prometheus.GaugeVec
+	scrapesCounter prometheus.Counter
+	txBytes        *prometheus.GaugeVec
+	rxBytes        *prometheus.GaugeVec
+	pingLatency    *prometheus.GaugeVec
+	directConnect  *prometheus.GaugeVec
 }
 
 func NewMetrics(reg prometheus.Registerer) *metrics {
 	m := &metrics{
-		txBytes: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "tailscale_network_transmit_bytes_total",
-			Help: "Total bytes transmitted",
+		scrapesCounter: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "tailscale_scrapes_total",
+			Help: "Total number of scrapes performed",
+		}),
+		txBytes: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "tailscale_network_transmit_bytes",
+			Help: "Current transmitted bytes",
 		}, []string{"src_ip", "src_host", "dst_ip", "dst_host"}),
-		rxBytes: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "tailscale_network_receive_bytes_total",
-			Help: "Total bytes received",
+		rxBytes: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "tailscale_network_receive_bytes",
+			Help: "Current received bytes",
 		}, []string{"src_ip", "src_host", "dst_ip", "dst_host"}),
 		pingLatency: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "tailscale_network_ping_latency",
@@ -77,7 +85,7 @@ func NewMetrics(reg prometheus.Registerer) *metrics {
 		}, []string{"src_ip", "src_host", "dst_ip", "dst_host"}),
 	}
 
-	reg.MustRegister(m.txBytes, m.rxBytes, m.pingLatency, m.directConnect)
+	reg.MustRegister(m.scrapesCounter, m.txBytes, m.rxBytes, m.pingLatency, m.directConnect)
 	return m
 }
 
@@ -119,6 +127,8 @@ func main() {
 
 func collectMetrics(client *tailscale.LocalClient, m *metrics, args *arguments) error {
 	ctx := context.Background()
+
+	m.scrapesCounter.Inc()
 
 	// Get local status
 	status, err := client.Status(ctx)
@@ -197,15 +207,35 @@ func collectMetrics(client *tailscale.LocalClient, m *metrics, args *arguments) 
 					return
 				}
 
+				var latency int64 = -1
+
 				// Timeout ping after 2 seconds
 				pingCtx, cancel := context.WithTimeout(ctx, *args.pingTimeout)
 				defer cancel()
 
-				var latency int64 = -1
 
-				result, err := client.Ping(pingCtx, ip, tailcfg.PingICMP)
-				if err == nil {
-					latency = time.Duration(result.LatencySeconds * float64(time.Second)).Milliseconds()
+				if *args.pingWithTailscale {
+
+
+					result, err := client.Ping(pingCtx, ip, tailcfg.PingICMP)
+					if err == nil {
+						latency = time.Duration(result.LatencySeconds * float64(time.Second)).Milliseconds()
+					}
+
+				} else {
+					pinger, err := proping.NewPinger(ip.String())
+					if err != nil {
+						return
+					}
+					pinger.Timeout = *args.pingTimeout
+					pinger.Count = 1
+					
+					if err = pinger.RunWithContext(pingCtx); err == nil {
+						stats := pinger.Statistics()
+						if stats.PacketsRecv > 0 {
+							latency = int64(stats.AvgRtt.Milliseconds())
+						}
+					}
 				}
 
 				mu.Lock()
